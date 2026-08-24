@@ -97,3 +97,10 @@ function frameLoop() {
 
 * **Unity:** Use Coroutines (`yield return null` inside a `for` loop) or process sliced arrays inside `Update()` based on `Time.deltaTime`.
 * **Unreal Engine / C++:** Implement time-sliced ticking using `FTickFunction` budgets or offload calculations to a background `FRunnable` thread that feeds data through thread-safe queues.
+
+SmoothSync doesn't make the underlying math run faster; it simply prioritizes what human perception cares about most—smooth, uninterrupted visual motion over instantaneous total recalculation.
+
+Trade-Offs & Best Practices
+When to use SmoothSync: Game AI processing, heavy particle simulation updates, soft-body mechanics, procedural mesh updates, spatial audio calculations, or pathfinding algorithms where rendering smoothness is more critical than instantaneous synchronization of all world entities.
+
+When NOT to use SmoothSync: Rigid physics solvers or precise collision matrices where missing a step per object results in physical instability or clipping artifacts.
