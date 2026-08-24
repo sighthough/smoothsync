@@ -1,0 +1,464 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Isolated OffscreenCanvas Multi-Threaded Benchmark</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <style>
+        :root {
+            --bg-dark: #090d16;
+            --panel-bg: #131b2e;
+            --accent-green: #10b981;
+            --accent-red: #f43f5e;
+            --accent-blue: #3b82f6;
+            --text-main: #f8fafc;
+            --text-sub: #94a3b8;
+            --border-color: #23314d;
+        }
+
+        * { box-sizing: border-box; }
+
+        body {
+            font-family: system-ui, -apple-system, sans-serif;
+            background-color: var(--bg-dark);
+            color: var(--text-main);
+            margin: 0;
+            padding: 16px;
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+            min-height: 100vh;
+        }
+
+        header {
+            text-align: center;
+            border-bottom: 1px solid var(--border-color);
+            padding-bottom: 12px;
+        }
+
+        h1 { margin: 0 0 4px 0; font-size: 1.5rem; }
+        p.subtitle { margin: 0; color: var(--text-sub); font-size: 0.85rem; }
+
+        .controls-panel {
+            background: var(--panel-bg);
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            padding: 16px;
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 16px;
+        }
+
+        .control-group {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+        }
+
+        label { font-size: 0.8rem; color: var(--text-sub); font-weight: 600; }
+        .val-disp { color: var(--accent-blue); float: right; font-weight: bold; }
+
+        input[type="range"] {
+            width: 100%;
+            accent-color: var(--accent-blue);
+        }
+
+        .viewports-container {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 16px;
+            flex: 1;
+            min-height: 480px;
+        }
+
+        @media (max-width: 850px) {
+            .viewports-container { grid-template-columns: 1fr; }
+        }
+
+        .viewport-card {
+            background: var(--panel-bg);
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+            position: relative;
+        }
+
+        .viewport-header {
+            padding: 12px 16px;
+            background: #0d1424;
+            border-bottom: 1px solid var(--border-color);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .v-title { font-weight: 700; font-size: 0.95rem; }
+        .v-title.default { color: var(--accent-red); }
+        .v-title.smooth { color: var(--accent-green); }
+
+        .canvas-wrapper {
+            flex: 1;
+            position: relative;
+            width: 100%;
+            height: 100%;
+            min-height: 380px;
+        }
+
+        canvas {
+            width: 100% !important;
+            height: 100% !important;
+            display: block;
+        }
+
+        .metrics-overlay {
+            position: absolute;
+            top: 12px;
+            left: 12px;
+            background: rgba(9, 13, 22, 0.85);
+            backdrop-filter: blur(4px);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            padding: 10px 14px;
+            font-family: monospace;
+            font-size: 0.8rem;
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+            pointer-events: none;
+        }
+
+        .metric-row { display: flex; justify-content: space-between; gap: 16px; }
+        .metric-val { font-weight: bold; }
+        .val-green { color: var(--accent-green); }
+        .val-red { color: var(--accent-red); }
+    </style>
+</head>
+<body>
+
+<header>
+    <h1>Isolated OffscreenCanvas Multi-Threaded Benchmark</h1>
+    <p class="subtitle">Offscreen Canvas Render Threads + Real-Time Math Color Coupling</p>
+</header>
+
+<div class="controls-panel">
+    <div class="control-group">
+        <label>Object Count: <span id="particleDisp" class="val-disp">2,500</span></label>
+        <input type="range" id="particleCount" min="500" max="5000" step="250" value="2500">
+    </div>
+
+    <div class="control-group">
+        <label>Heavy Math Payload / Object: <span id="workloadDisp" class="val-disp">15,000 Ops</span></label>
+        <input type="range" id="cpuWorkload" min="1000" max="50000" step="1000" value="15000">
+    </div>
+
+    <div class="control-group">
+        <label>Kernel Tick Quantum Target: <span id="quantumDisp" class="val-disp">15.625 ms (64Hz)</span></label>
+        <input type="range" id="frameQuantum" min="8.0" max="32.0" step="0.125" value="15.625">
+    </div>
+
+    <div class="control-group">
+        <label>Safety Headroom Buffer: <span id="safetyDisp" class="val-disp">1.5 ms</span></label>
+        <input type="range" id="safetyHeadroom" min="0.1" max="5.0" step="0.1" value="1.5">
+    </div>
+</div>
+
+<div class="viewports-container">
+    <div class="viewport-card">
+        <div class="viewport-header">
+            <span class="v-title default">Default Engine (Offscreen Worker 1)</span>
+            <span style="font-size: 0.75rem; color: var(--text-sub);">Forces 100% Math + Render Per Frame</span>
+        </div>
+        <div class="canvas-wrapper">
+            <canvas id="canvas-default"></canvas>
+            <div class="metrics-overlay">
+                <div class="metric-row"><span>Display FPS:</span><span id="defFps" class="metric-val val-red">0</span></div>
+                <div class="metric-row"><span>Frame Loop Time:</span><span id="defFrameTime" class="metric-val val-red">0.0 ms</span></div>
+                <div class="metric-row"><span>Math Ops / Sec:</span><span id="defOps" class="metric-val">0</span></div>
+            </div>
+        </div>
+    </div>
+
+    <div class="viewport-card">
+        <div class="viewport-header">
+            <span class="v-title smooth">SmoothSync Engine (Offscreen Worker 2)</span>
+            <span style="font-size: 0.75rem; color: var(--text-sub);">15.625ms Kernel Quantum (-1.5ms Headroom)</span>
+        </div>
+        <div class="canvas-wrapper">
+            <canvas id="canvas-smooth"></canvas>
+            <div class="metrics-overlay">
+                <div class="metric-row"><span>Display FPS:</span><span id="smoothFps" class="metric-val val-green">0</span></div>
+                <div class="metric-row"><span>Frame Loop Time:</span><span id="smoothFrameTime" class="metric-val val-green">0.0 ms</span></div>
+                <div class="metric-row"><span>Math Ops / Sec:</span><span id="smoothOps" class="metric-val">0</span></div>
+                <div class="metric-row"><span>Active Budget Limit:</span><span id="activeBudget" class="metric-val val-green">14.125 ms</span></div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Offscreen Rendering Web Worker Blob -->
+<script id="workerCode" type="text/javascript">
+    importScripts('https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js');
+
+    let renderer, scene, camera, meshGroup, particles = [];
+    let config = { count: 2500, opsPerObj: 15000, quantumMs: 15.625, safetyMs: 1.5, engineType: 'DEFAULT' };
+    let nextParticleIndex = 0;
+    let frames = 0, lastFpsTime = performance.now(), opsAccumulator = 0;
+
+    function heavyMath(intensity, seed) {
+        let val = seed;
+        for (let i = 0; i < intensity; i++) {
+            val = (val * 1.0001 + Math.sin(i) * Math.cos(val)) % 100;
+        }
+        return val;
+    }
+
+    function initThree(canvas, width, height) {
+        renderer = new THREE.WebGLRenderer({ canvas: canvas, antialias: true });
+        renderer.setPixelRatio(1);
+        renderer.setSize(width, height, false);
+
+        scene = new THREE.Scene();
+        scene.background = new THREE.Color(0x090d16);
+
+        camera = new THREE.PerspectiveCamera(60, width / height, 0.1, 1000);
+        camera.position.set(0, 0, 45);
+
+        const light = new THREE.DirectionalLight(0xffffff, 1);
+        light.position.set(10, 20, 30);
+        scene.add(light);
+        scene.add(new THREE.AmbientLight(0x334155));
+
+        meshGroup = new THREE.Group();
+        scene.add(meshGroup);
+
+        rebuildParticles();
+    }
+
+    function rebuildParticles() {
+        while(meshGroup.children.length > 0) { 
+            const obj = meshGroup.children[0];
+            obj.geometry.dispose();
+            obj.material.dispose();
+            meshGroup.remove(obj); 
+        }
+        particles = [];
+        nextParticleIndex = 0;
+
+        const count = config.count;
+        const geometry = new THREE.BoxGeometry(0.7, 0.7, 0.7);
+
+        let seed = 12345;
+        const pseudoRandom = () => {
+            const x = Math.sin(seed++) * 10000;
+            return x - Math.floor(x);
+        };
+
+        for (let i = 0; i < count; i++) {
+            const material = new THREE.MeshStandardMaterial({ color: 0x3b82f6, roughness: 0.3 });
+            const mesh = new THREE.Mesh(geometry, material);
+            const radius = 12 + pseudoRandom() * 12;
+            const theta = pseudoRandom() * Math.PI * 2;
+            const phi = pseudoRandom() * Math.PI;
+
+            mesh.position.x = radius * Math.sin(phi) * Math.cos(theta);
+            mesh.position.y = radius * Math.sin(phi) * Math.sin(theta);
+            mesh.position.z = radius * Math.cos(phi);
+
+            meshGroup.add(mesh);
+            particles.push({ mesh, radius, theta, phi, speed: 0.01 + pseudoRandom() * 0.015 });
+        }
+    }
+
+    function animate() {
+        const frameStart = performance.now();
+        meshGroup.rotation.y += 0.008;
+
+        // 1. Continuous positional rotation update
+        for (let i = 0; i < particles.length; i++) {
+            const p = particles[i];
+            p.theta += p.speed;
+            p.mesh.position.x = p.radius * Math.sin(p.phi) * Math.cos(p.theta);
+            p.mesh.position.y = p.radius * Math.sin(p.phi) * Math.sin(p.theta);
+        }
+
+        // 2. Heavy Math Execution coupled to rendering (updates object colors dynamically)
+        let opsThisFrame = 0;
+        const opsPerObj = config.opsPerObj;
+
+        if (config.engineType === 'DEFAULT') {
+            // Unregulated: Forces 100% calculation payload every frame
+            for (let i = 0; i < particles.length; i++) {
+                const res = heavyMath(opsPerObj, particles[i].theta);
+                const hue = (res * 3.6) % 360;
+                particles[i].mesh.material.color.setHSL(hue / 360, 0.85, 0.5);
+                opsThisFrame += opsPerObj;
+            }
+        } else {
+            // SmoothSync: Time-budgeted math up to (quantumMs - safetyMs) limit
+            const budgetLimitMs = Math.max(0.1, config.quantumMs - config.safetyMs);
+            let startIndex = nextParticleIndex;
+            let processed = 0;
+
+            for (let i = 0; i < particles.length; i++) {
+                const pIndex = (startIndex + i) % particles.length;
+                const p = particles[pIndex];
+                const res = heavyMath(opsPerObj, p.theta);
+                const hue = (res * 3.6) % 360;
+                p.mesh.material.color.setHSL(hue / 360, 0.85, 0.5);
+                opsThisFrame += opsPerObj;
+                processed++;
+
+                if ((performance.now() - frameStart) >= budgetLimitMs) {
+                    nextParticleIndex = (pIndex + 1) % particles.length;
+                    break;
+                }
+            }
+        }
+
+        renderer.render(scene, camera);
+
+        const duration = performance.now() - frameStart;
+        frames++;
+        opsAccumulator += opsThisFrame;
+
+        const now = performance.now();
+        if (now - lastFpsTime >= 500) {
+            const elapsedSec = (now - lastFpsTime) / 1000;
+            const fps = Math.round(frames / elapsedSec);
+            const opsSec = Math.round(opsAccumulator / elapsedSec);
+            self.postMessage({
+                type: 'METRICS',
+                fps,
+                frameTime: duration,
+                opsSec
+            });
+            frames = 0;
+            opsAccumulator = 0;
+            lastFpsTime = now;
+        }
+
+        self.requestAnimationFrame(animate);
+    }
+
+    self.onmessage = function(e) {
+        if (e.data.type === 'INIT') {
+            config = { ...config, ...e.data.config };
+            initThree(e.data.canvas, e.data.width, e.data.height);
+            animate();
+        } else if (e.data.type === 'UPDATE_CONFIG') {
+            const rebuildNeeded = config.count !== e.data.config.count;
+            config = { ...config, ...e.data.config };
+            if (rebuildNeeded) rebuildParticles();
+        } else if (e.data.type === 'RESIZE') {
+            if (renderer && camera) {
+                renderer.setSize(e.data.width, e.data.height, false);
+                camera.aspect = e.data.width / e.data.height;
+                camera.updateProjectionMatrix();
+            }
+        }
+    };
+</script>
+
+<script>
+    const blob = new Blob([document.getElementById('workerCode').textContent], { type: 'application/javascript' });
+    const workerUrl = URL.createObjectURL(blob);
+
+    const workerDefault = new Worker(workerUrl);
+    const workerSmooth = new Worker(workerUrl);
+
+    const canvasDefault = document.getElementById('canvas-default');
+    const canvasSmooth = document.getElementById('canvas-smooth');
+
+    const offscreenDefault = canvasDefault.transferControlToOffscreen();
+    const offscreenSmooth = canvasSmooth.transferControlToOffscreen();
+
+    const getWorkerConfig = (engineType) => ({
+        count: parseInt(document.getElementById('particleCount').value),
+        opsPerObj: parseInt(document.getElementById('cpuWorkload').value),
+        quantumMs: parseFloat(document.getElementById('frameQuantum').value),
+        safetyMs: parseFloat(document.getElementById('safetyHeadroom').value),
+        engineType
+    });
+
+    // Initialize Workers with OffscreenCanvas
+    workerDefault.postMessage({
+        type: 'INIT',
+        canvas: offscreenDefault,
+        width: canvasDefault.parentElement.clientWidth,
+        height: canvasDefault.parentElement.clientHeight,
+        config: getWorkerConfig('DEFAULT')
+    }, [offscreenDefault]);
+
+    workerSmooth.postMessage({
+        type: 'INIT',
+        canvas: offscreenSmooth,
+        width: canvasSmooth.parentElement.clientWidth,
+        height: canvasSmooth.parentElement.clientHeight,
+        config: getWorkerConfig('SMOOTHSYNC')
+    }, [offscreenSmooth]);
+
+    // UI Metrics Listeners
+    workerDefault.onmessage = (e) => {
+        if (e.data.type === 'METRICS') {
+            document.getElementById('defFps').textContent = e.data.fps;
+            document.getElementById('defFrameTime').textContent = `${e.data.frameTime.toFixed(1)} ms`;
+            document.getElementById('defOps').textContent = e.data.opsSec.toLocaleString();
+            document.getElementById('defFps').className = `metric-val ${e.data.fps < 50 ? 'val-red' : 'val-green'}`;
+            document.getElementById('defFrameTime').className = `metric-val ${e.data.frameTime > 16.6 ? 'val-red' : 'val-green'}`;
+        }
+    };
+
+    workerSmooth.onmessage = (e) => {
+        if (e.data.type === 'METRICS') {
+            document.getElementById('smoothFps').textContent = e.data.fps;
+            document.getElementById('smoothFrameTime').textContent = `${e.data.frameTime.toFixed(1)} ms`;
+            document.getElementById('smoothOps').textContent = e.data.opsSec.toLocaleString();
+            document.getElementById('smoothFps').className = `metric-val ${e.data.fps >= 55 ? 'val-green' : 'val-red'}`;
+            document.getElementById('smoothFrameTime').className = `metric-val ${e.data.frameTime <= 16.6 ? 'val-green' : 'val-red'}`;
+        }
+    };
+
+    const updateBudgetDisplay = () => {
+        const quantum = parseFloat(document.getElementById('frameQuantum').value);
+        const safety = parseFloat(document.getElementById('safetyHeadroom').value);
+        const active = Math.max(0.1, quantum - safety);
+        document.getElementById('activeBudget').textContent = `${active.toFixed(3)} ms`;
+    };
+
+    const broadcastConfig = () => {
+        updateBudgetDisplay();
+        workerDefault.postMessage({ type: 'UPDATE_CONFIG', config: getWorkerConfig('DEFAULT') });
+        workerSmooth.postMessage({ type: 'UPDATE_CONFIG', config: getWorkerConfig('SMOOTHSYNC') });
+    };
+
+    const bindSlider = (id, dispId, unit, transform = v => v) => {
+        const input = document.getElementById(id);
+        const disp = document.getElementById(dispId);
+        input.addEventListener('input', () => {
+            disp.textContent = `${transform(input.value)} ${unit}`;
+            broadcastConfig();
+        });
+    };
+
+    bindSlider('particleCount', 'particleDisp', '', v => parseInt(v).toLocaleString());
+    bindSlider('cpuWorkload', 'workloadDisp', 'Ops', v => parseInt(v).toLocaleString());
+    bindSlider('frameQuantum', 'quantumDisp', 'ms', v => parseFloat(v).toFixed(3));
+    bindSlider('safetyHeadroom', 'safetyDisp', 'ms', v => parseFloat(v).toFixed(1));
+
+    window.addEventListener('resize', () => {
+        const w1 = canvasDefault.parentElement.clientWidth;
+        const h1 = canvasDefault.parentElement.clientHeight;
+        const w2 = canvasSmooth.parentElement.clientWidth;
+        const h2 = canvasSmooth.parentElement.clientHeight;
+        workerDefault.postMessage({ type: 'RESIZE', width: w1, height: h1 });
+        workerSmooth.postMessage({ type: 'RESIZE', width: w2, height: h2 });
+    });
+
+    updateBudgetDisplay();
+</script>
+
+</body>
+</html>
